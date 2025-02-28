@@ -3,7 +3,8 @@ import random
 import requests
 import sqlite3
 import os
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
+from datetime import time as dt_time
 import time
 from typing import Dict, Any, List
 
@@ -234,17 +235,24 @@ async def wide_category_callback(update: Update, context: ContextTypes.DEFAULT_T
     _, category = query.data.split(":", 1)  # "cat:Nature"
     subcats = wide_categories.get(category, [])
     if not subcats:
-        await query.message.reply_text("No subcategories found.")
+        if query.message:
+            await query.message.reply_text("No subcategories found.")
+        else:
+            await query.answer("No subcategories found.", show_alert=True)
         return
 
     keyboard = [
         [InlineKeyboardButton(s, callback_data=f"subcat:{category}:{s}")]
         for s in subcats
     ]
-    await query.message.reply_text(
-        f"Subcategories of {category}:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+
+    if query.message:
+        await query.message.reply_text(
+            f"Subcategories of {category}:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await query.answer(f"Subcategories of {category}:", show_alert=True)
 
 
 async def wide_subcategory_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -538,20 +546,20 @@ def main():
     job_queue: JobQueue = application.job_queue
     job_queue.run_daily(
         morning_wallpaper_distribution,
-        time=time(hour=11, minute=0, second=0),
+        time=dt_time(hour=11, minute=0, second=0),
         days=(0, 1, 2, 3, 4, 5, 6)
     )
 
     # Nightly usage prompt at 22:00
     job_queue.run_daily(
         nightly_usage_prompt,
-        time=time(hour=22, minute=0, second=0),
+        time=dt_time(hour=22, minute=0, second=0),
         days=(0, 1, 2, 3, 4, 5, 6)
     )
     # Daily summary at 23:59 (optional)
     job_queue.run_daily(
         daily_summary,
-        time=time(hour=23, minute=0, second=0),
+        time=dt_time(hour=23, minute=0, second=0),
         days=(0, 1, 2, 3, 4, 5, 6)
     )
 
