@@ -437,7 +437,7 @@ async def nightly_usage_prompt(context: ContextTypes.DEFAULT_TYPE):
 
     with sqlite3.connect("bot_data.db") as conn:
         c = conn.cursor()
-        c.execute("SELECT user_id FROM users")
+        c.execute("SELECT user_id FROM users WHERE wallpapers_received > 0")
         rows = c.fetchall()
 
     for row in rows:
