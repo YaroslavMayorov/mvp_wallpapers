@@ -32,12 +32,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Example categories
+
 wide_categories = {
-    "Nature": ["Mountains", "Forests", "Beaches"],
-    "Abstract": ["Minimal", "Patterns", "3D"],
-    "Animals": ["Dogs", "Cats", "Wildlife"]
+    "Nature": ["Mountains", "Forests", "Beaches", "Sunsets", "Rivers", "Waterfalls", "Deserts", "Caves"],
+    "Space": ["Galaxies", "Planets", "Nebulae", "Stars", "Black Holes"],
+    "Animals": ["Wildlife animals", "Pets", "Birds", "Reptiles", "Cats", "Dogs"],
+    "Abstract": ["Fractals", "Geometric", "Minimalist", "3D", "Textures", "Surreal"],
+    "Cities": ["Skylines", "Bridges", "Streets", "Landmarks", "Nightscapes", "Futuristic Cities"],
+    "Fantasy": ["Dragons", "Magical Landscapes", "Fairy Tales", "Fantasy Art"],
+    "Technology": ["Cyberpunk", "Futuristic", "AI & Robotics", "Gadgets"],
+    "Cars & Vehicles": ["Sports Cars", "Motorcycles", "Classic Cars", "Airplanes", "Trains", "Boats"],
+    "Seasons": ["Spring", "Summer", "Autumn", "Winter"],
+    "Dark & Gothic": ["Dark Aesthetic", "Horror", "Gothic Art", "Skulls", "Vampires"],
 }
-narrow_categories = ["Nature", "Abstract", "Animals"]
+
+narrow_categories = ["Nature", "Abstract", "Animals", "Space", "Cities", "Fantasy", "Technology"]
 
 
 # -------------------------
@@ -560,6 +569,12 @@ def main():
     job_queue.run_daily(
         daily_summary,
         time=dt_time(hour=23, minute=0, second=0),
+        days=(0, 1, 2, 3, 4, 5, 6)
+    )
+
+    job_queue.run_daily(
+        nightly_prefetch,
+        time=dt_time(hour=1, minute=0, second=0),
         days=(0, 1, 2, 3, 4, 5, 6)
     )
 
