@@ -204,7 +204,7 @@ def mark_image_as_used(user_id: int, image_id: str):
                 VALUES (?, ?)
             """, (user_id, image_id))
             conn.commit()
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as e:
             logger.warning(f"Image {image_id} already marked as used for user {user_id}: {e}")
             # Means (user_id, image_id) was already inserted
             pass
