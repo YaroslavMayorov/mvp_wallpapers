@@ -7,6 +7,9 @@ from datetime import datetime, timedelta
 from datetime import time as dt_time
 import time
 from typing import Dict, Any, List
+import pytz
+
+cyprus_tz = pytz.timezone("Asia/Nicosia")
 
 from dotenv import load_dotenv
 from telegram import (
@@ -27,6 +30,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
 BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID"))
+BOT_OWNER_ID2 = int(os.getenv("BOT_OWNER_ID2"))
+BOT_OWNER_ID3 = int(os.getenv("BOT_OWNER_ID3"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,7 +68,8 @@ def init_db():
             user_group TEXT NOT NULL,
             wallpapers_used INTEGER NOT NULL DEFAULT 0,
             wallpapers_received INTEGER NOT NULL DEFAULT 0,
-            chosen_category TEXT
+            chosen_category TEXT,
+            last_category_click TEXT
         )
         """)
 
@@ -88,13 +94,15 @@ def init_db():
         """)
 
         conn.commit()
+        logger.info("Database initialised")
 
 
 def get_or_create_user(user_id: int) -> Dict[str, Any]:
+    logger.info(f"Create user with id: {user_id}")
     with sqlite3.connect("bot_data.db") as conn:
         c = conn.cursor()
         c.execute("""
-            SELECT user_id, user_group, wallpapers_used, wallpapers_received, chosen_category
+            SELECT user_id, user_group, wallpapers_used, wallpapers_received, chosen_category, last_category_click
             FROM users
             WHERE user_id = ?
         """, (user_id,))
@@ -105,7 +113,8 @@ def get_or_create_user(user_id: int) -> Dict[str, Any]:
                 "group": row[1],
                 "wallpapers_used": row[2],
                 "wallpapers_received": row[3],
-                "chosen_category": row[4]
+                "chosen_category": row[4],
+                "last_category_click": row[5]
             }
         else:
             group = random.choice(["narrow", "wide"])
@@ -118,11 +127,13 @@ def get_or_create_user(user_id: int) -> Dict[str, Any]:
                 "group": group,
                 "wallpapers_used": 0,
                 "wallpapers_received": 0,
-                "chosen_category": None
+                "chosen_category": None,
+                "last_category_click": ""
             }
 
 
 def update_user(user: Dict[str, Any]):
+    logger.info(f"Updating user with id: {user['user_id']}")
     with sqlite3.connect("bot_data.db") as conn:
         c = conn.cursor()
         c.execute("""
@@ -143,6 +154,7 @@ def update_user(user: Dict[str, Any]):
 
 
 def fetch_images_from_db(category_key: str, user_id: int) -> List[Dict[str, str]]:
+    logger.info(f"Fetching images for user with id: {user_id}, category: {category_key}")
     """
     Returns a list of images from `images` for this category_key
     that the given user has NOT seen yet (checked via user_images).
@@ -171,6 +183,7 @@ def fetch_images_from_db(category_key: str, user_id: int) -> List[Dict[str, str]
 
 
 def add_images_to_db(category_key: str, images: List[Dict[str, str]]):
+    logger.info("Adding images to db")
     with sqlite3.connect("bot_data.db") as conn:
         c = conn.cursor()
         for img in images:
@@ -182,6 +195,7 @@ def add_images_to_db(category_key: str, images: List[Dict[str, str]]):
 
 
 def mark_image_as_used(user_id: int, image_id: str):
+    logger.info("Marking images in db")
     with sqlite3.connect("bot_data.db") as conn:
         c = conn.cursor()
         try:
@@ -191,14 +205,37 @@ def mark_image_as_used(user_id: int, image_id: str):
             """, (user_id, image_id))
             conn.commit()
         except sqlite3.IntegrityError:
+            logger.warning(f"Image {image_id} already marked as used for user {user_id}: {e}")
             # Means (user_id, image_id) was already inserted
             pass
+
+
+def check_category_limit(user: Dict[str, Any]) -> bool:
+    logger.info("Checking user's limit")
+    """Check if user clicked a category within the last 12 hours."""
+    if user["last_category_click"]:
+        last_click = datetime.fromisoformat(user["last_category_click"])
+        if datetime.now() - last_click < timedelta(hours=12):
+            return False  # User must wait 24 hours
+    return True
+
+
+def update_category_click(user_id: int):
+    logger.info("Update user's click time")
+    """Update the last category click timestamp."""
+    with sqlite3.connect("bot_data.db") as conn:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE users SET last_category_click = ? WHERE user_id = ?
+        """, (datetime.now().isoformat(), user_id))
+        conn.commit()
 
 
 # -------------------------
 # FETCH FROM UNSPLASH
 # -------------------------
 def fetch_images_from_unsplash(query: str, count: int = 5) -> List[Dict[str, str]]:
+    logger.info("Fetching from unsplash")
     url = "https://api.unsplash.com/photos/random"
     params = {
         "query": query,
@@ -216,6 +253,8 @@ def fetch_images_from_unsplash(query: str, count: int = 5) -> List[Dict[str, str
                     "id": item["id"],
                     "url": item["urls"]["regular"]
                 })
+        elif resp.status_code == 403:
+            logger.warning(f"Limit is exceeded! Unsplash returned {resp.status_code}: {resp.text}")
         else:
             logger.warning(f"Unsplash returned {resp.status_code}: {resp.text}")
     except Exception as e:
@@ -228,10 +267,11 @@ def fetch_images_from_unsplash(query: str, count: int = 5) -> List[Dict[str, str
 # -------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    logger.info(f"User {user_id} started")
     user = get_or_create_user(user_id)
 
     await update.message.reply_text(
-        "Hello! You will receive a daily wallpaper in the morning. Stay tuned!"
+        "Hello! You will receive a wallpaper every day in the morning. Stay tuned!"
     )
 
 
@@ -240,6 +280,7 @@ async def wide_category_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     user_id = query.from_user.id
     user = get_or_create_user(user_id)
+    logger.info(f"User {user_id} chose wide category")
 
     _, category = query.data.split(":", 1)  # "cat:Nature"
     subcats = wide_categories.get(category, [])
@@ -269,10 +310,16 @@ async def wide_subcategory_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
     user_id = query.from_user.id
     user = get_or_create_user(user_id)
+    logger.info(f"User {user_id} chose wide subcategory")
+
+    if not check_category_limit(user):
+        await context.bot.send_message(chat_id=user_id, text="You can get only one wallpaper a day.")
+        return
 
     _, main_cat, subcat = query.data.split(":", 2)  # e.g. "subcat:Nature:Mountains"
     category_key = f"{main_cat}:{subcat}"
     user["chosen_category"] = category_key
+    update_category_click(user_id)
     update_user(user)
 
     await send_wallpaper_to_user(user_id, category_key, context)
@@ -283,17 +330,24 @@ async def narrow_category_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     user_id = query.from_user.id
     user = get_or_create_user(user_id)
+    logger.info(f"User {user_id} chose narrow category")
+
+    if not check_category_limit(user):
+        await context.bot.send_message(chat_id=user_id, text="You can only get one wallpaper a day.")
+        return
 
     _, category = query.data.split(":", 1)
     category_key = category
     user["chosen_category"] = category_key
     update_user(user)
+    update_category_click(user_id)
 
     await send_wallpaper_to_user(user_id, category_key, context)
 
 
 async def send_wallpaper_to_user(user_id: int, category_key: str, context: ContextTypes.DEFAULT_TYPE):
     # 1) Check DB for unused images in the requested category
+    logger.info(f"Trying to  send wallpapers for user {user_id}")
     images = fetch_images_from_db(category_key, user_id)
     if not images:
         # 2) If none in cache, fetch from Unsplash
@@ -318,6 +372,7 @@ async def send_wallpaper_to_user(user_id: int, category_key: str, context: Conte
     # Send to user
     try:
         await context.bot.send_photo(chat_id=user_id, photo=image_url)
+        await context.bot.send_document(chat_id=user_id, document=image_url)
 
         # Mark the user as having received this image
         mark_image_as_used(user_id, image_id)
@@ -420,7 +475,7 @@ async def morning_wallpaper_distribution(context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
             await bot.send_message(
                 chat_id=user_id,
-                text="Good morning! Choose a category:",
+                text="Good morning! Choose one category:",
                 reply_markup=reply_markup
             )
         except Exception as e:
@@ -457,6 +512,21 @@ async def nightly_usage_prompt(context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.error(f"Error prompting user {user_id}: {e}")
+
+
+async def usage_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the user's response to 'did you use it?'"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    user = get_or_create_user(user_id)
+    await query.answer()
+
+    data = query.data  # e.g. "used:yes" or "used:no"
+    _, answer = data.split(":")
+    if answer == "yes":
+        user["wallpapers_used"] += 1
+
+    await query.message.reply_text("Thank you for the feedback! Good night!")
 
 
 async def daily_summary(context: ContextTypes.DEFAULT_TYPE):
@@ -520,12 +590,10 @@ async def daily_summary(context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        if BOT_OWNER_ID != 0:
-            # send to owner
-            await bot.send_message(chat_id=BOT_OWNER_ID, text=summary_text)
-        else:
-            # If no owner ID set, just log
-            logger.info(summary_text)
+        await bot.send_message(chat_id=BOT_OWNER_ID, text=summary_text)
+        await bot.send_message(chat_id=BOT_OWNER_ID2, text=summary_text)
+        await bot.send_message(chat_id=BOT_OWNER_ID3, text=summary_text)
+        logger.info(summary_text)
     except Exception as e:
         logger.error(f"Error sending daily summary: {e}")
 
@@ -548,33 +616,33 @@ def main():
     # For narrow group
     application.add_handler(CallbackQueryHandler(narrow_category_callback, pattern=r"^narrow_cat:"))
 
-    application.add_handler(CallbackQueryHandler(nightly_usage_prompt, pattern=r"^used:"))
+    application.add_handler(CallbackQueryHandler(usage_callback, pattern=r"^used:"))
 
     # 4) schedule jobs
 
     job_queue: JobQueue = application.job_queue
     job_queue.run_daily(
         morning_wallpaper_distribution,
-        time=dt_time(hour=11, minute=0, second=0),
+        time=dt_time(hour=11, minute=0, second=0, tzinfo=cyprus_tz),
         days=(0, 1, 2, 3, 4, 5, 6)
     )
 
     # Nightly usage prompt at 22:00
     job_queue.run_daily(
         nightly_usage_prompt,
-        time=dt_time(hour=22, minute=0, second=0),
+        time=dt_time(hour=22, minute=0, second=0, tzinfo=cyprus_tz),
         days=(0, 1, 2, 3, 4, 5, 6)
     )
     # Daily summary at 23:59 (optional)
     job_queue.run_daily(
         daily_summary,
-        time=dt_time(hour=23, minute=0, second=0),
+        time=dt_time(hour=23, minute=0, second=0, tzinfo=cyprus_tz),
         days=(0, 1, 2, 3, 4, 5, 6)
     )
 
     job_queue.run_daily(
         nightly_prefetch,
-        time=dt_time(hour=1, minute=0, second=0),
+        time=dt_time(hour=1, minute=0, second=0, tzinfo=cyprus_tz),
         days=(0, 1, 2, 3, 4, 5, 6)
     )
 
