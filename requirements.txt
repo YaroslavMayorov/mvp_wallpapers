@@ -2,3 +2,4 @@ requests
 python-dotenv==1.0.1
 python-telegram-bot[job-queue]
 pytz
+flask
