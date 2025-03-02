@@ -1,7 +1,8 @@
 import logging
+
 import random
 import requests
-import sqlite3
+# Removed `import sqlite3`
 import os
 from datetime import datetime, timedelta
 from datetime import time as dt_time
@@ -9,7 +10,8 @@ import time
 from typing import Dict, Any, List
 import pytz
 
-cyprus_tz = pytz.timezone("Asia/Nicosia")
+import mysql.connector
+from mysql.connector import Error
 
 from dotenv import load_dotenv
 from telegram import (
@@ -33,11 +35,18 @@ BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID"))
 BOT_OWNER_ID2 = int(os.getenv("BOT_OWNER_ID2"))
 BOT_OWNER_ID3 = int(os.getenv("BOT_OWNER_ID3"))
 
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASS")
+DB_NAME = os.getenv("DB_NAME")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Example categories
+cyprus_tz = pytz.timezone("Asia/Nicosia")
 
+# Example categories...
 wide_categories = {
     "Nature": ["Mountains", "Forests", "Beaches", "Sunsets", "Rivers", "Waterfalls", "Deserts", "Caves"],
     "Space": ["Galaxies", "Planets", "Nebulae", "Stars", "Black Holes"],
@@ -50,76 +59,88 @@ wide_categories = {
     "Seasons": ["Spring", "Summer", "Autumn", "Winter"],
     "Dark & Gothic": ["Dark Aesthetic", "Horror", "Gothic Art", "Skulls", "Vampires"],
 }
-
 narrow_categories = ["Nature", "Abstract", "Animals", "Space", "Cities", "Fantasy", "Technology"]
 
+def get_connection():
+    try:
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            user=DB_USER,
+            password=DB_PASS,
+            database=DB_NAME
+        )
+        return conn
+    except Error as e:
+        logger.error(f"Error connecting to MySQL: {e}")
+        raise
 
-# -------------------------
-# DATABASE INIT
-# -------------------------
 def init_db():
-    with sqlite3.connect("bot_data.db") as conn:
+    try:
+        conn = get_connection()
         c = conn.cursor()
 
-        # Users
         c.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            user_group TEXT NOT NULL,
-            wallpapers_used INTEGER NOT NULL DEFAULT 0,
-            wallpapers_received INTEGER NOT NULL DEFAULT 0,
-            chosen_category TEXT,
-            last_category_click TEXT
+            user_id BIGINT PRIMARY KEY,
+            user_group VARCHAR(50) NOT NULL,
+            wallpapers_used INT NOT NULL DEFAULT 0,
+            wallpapers_received INT NOT NULL DEFAULT 0,
+            chosen_category VARCHAR(255),
+            last_category_click VARCHAR(50)
         )
         """)
 
-        # Images (cached from Unsplash)
         c.execute("""
         CREATE TABLE IF NOT EXISTS images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category_key TEXT NOT NULL,
-            image_id TEXT NOT NULL,
-            image_url TEXT NOT NULL
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            category_key VARCHAR(255) NOT NULL,
+            image_id VARCHAR(100) NOT NULL,
+            image_url VARCHAR(255) NOT NULL
         )
         """)
 
-        # Which images each user has already seen
         c.execute("""
         CREATE TABLE IF NOT EXISTS user_images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            image_id TEXT NOT NULL,
-            UNIQUE(user_id, image_id)
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            user_id BIGINT NOT NULL,
+            image_id VARCHAR(100) NOT NULL,
+            UNIQUE KEY unique_user_image (user_id, image_id)
         )
         """)
 
         conn.commit()
-        logger.info("Database initialised")
-
+        c.close()
+        conn.close()
+        logger.info("Database initialised (MySQL).")
+    except Exception as e:
+        logger.error(f"init_db error: {e}")
+        raise
 
 def get_or_create_user(user_id: int) -> Dict[str, Any]:
-    logger.info(f"Create user with id: {user_id}")
-    with sqlite3.connect("bot_data.db") as conn:
-        c = conn.cursor()
+    conn = get_connection()
+    try:
+        c = conn.cursor(dictionary=True)
         c.execute("""
             SELECT user_id, user_group, wallpapers_used, wallpapers_received, chosen_category, last_category_click
             FROM users
-            WHERE user_id = ?
+            WHERE user_id = %s
         """, (user_id,))
         row = c.fetchone()
         if row:
             return {
-                "user_id": row[0],
-                "group": row[1],
-                "wallpapers_used": row[2],
-                "wallpapers_received": row[3],
-                "chosen_category": row[4],
-                "last_category_click": row[5]
+                "user_id": row["user_id"],
+                "group": row["user_group"],
+                "wallpapers_used": row["wallpapers_used"],
+                "wallpapers_received": row["wallpapers_received"],
+                "chosen_category": row["chosen_category"],
+                "last_category_click": row["last_category_click"]
             }
         else:
             group = random.choice(["narrow", "wide"])
             c.execute("""
-                INSERT INTO users (user_id, user_group) VALUES (?, ?)
+                INSERT INTO users (user_id, user_group)
+                VALUES (%s, %s)
             """, (user_id, group))
             conn.commit()
             return {
@@ -130,19 +151,21 @@ def get_or_create_user(user_id: int) -> Dict[str, Any]:
                 "chosen_category": None,
                 "last_category_click": ""
             }
-
+    finally:
+        c.close()
+        conn.close()
 
 def update_user(user: Dict[str, Any]):
-    logger.info(f"Updating user with id: {user['user_id']}")
-    with sqlite3.connect("bot_data.db") as conn:
+    conn = get_connection()
+    try:
         c = conn.cursor()
         c.execute("""
             UPDATE users
-            SET user_group = ?,
-                wallpapers_used = ?,
-                wallpapers_received = ?,
-                chosen_category = ?
-            WHERE user_id = ?
+            SET user_group = %s,
+                wallpapers_used = %s,
+                wallpapers_received = %s,
+                chosen_category = %s
+            WHERE user_id = %s
         """, (
             user["group"],
             user["wallpapers_used"],
@@ -151,84 +174,80 @@ def update_user(user: Dict[str, Any]):
             user["user_id"]
         ))
         conn.commit()
-
+    finally:
+        c.close()
+        conn.close()
 
 def fetch_images_from_db(category_key: str, user_id: int) -> List[Dict[str, str]]:
-    logger.info(f"Fetching images for user with id: {user_id}, category: {category_key}")
-    """
-    Returns a list of images from `images` for this category_key
-    that the given user has NOT seen yet (checked via user_images).
-    """
-    with sqlite3.connect("bot_data.db") as conn:
-        c = conn.cursor()
+    conn = get_connection()
+    try:
+        c = conn.cursor(dictionary=True)
         c.execute("""
         SELECT i.id, i.image_id, i.image_url
           FROM images i
-     LEFT JOIN user_images ui 
+     LEFT JOIN user_images ui
             ON i.image_id = ui.image_id
-           AND ui.user_id = ?
-         WHERE i.category_key = ?
+           AND ui.user_id = %s
+         WHERE i.category_key = %s
            AND ui.image_id IS NULL
         """, (user_id, category_key))
         rows = c.fetchall()
-
-    images = []
-    for r in rows:
-        images.append({
-            "db_id": r[0],
-            "image_id": r[1],
-            "image_url": r[2]
-        })
-    return images
-
+        return [{
+            "db_id": r["id"],
+            "image_id": r["image_id"],
+            "image_url": r["image_url"]
+        } for r in rows]
+    finally:
+        c.close()
+        conn.close()
 
 def add_images_to_db(category_key: str, images: List[Dict[str, str]]):
-    logger.info("Adding images to db")
-    with sqlite3.connect("bot_data.db") as conn:
+    conn = get_connection()
+    try:
         c = conn.cursor()
         for img in images:
             c.execute("""
                 INSERT INTO images (category_key, image_id, image_url)
-                VALUES (?, ?, ?)
+                VALUES (%s, %s, %s)
             """, (category_key, img["id"], img["url"]))
         conn.commit()
-
+    finally:
+        c.close()
+        conn.close()
 
 def mark_image_as_used(user_id: int, image_id: str):
-    logger.info("Marking images in db")
-    with sqlite3.connect("bot_data.db") as conn:
+    conn = get_connection()
+    try:
         c = conn.cursor()
-        try:
-            c.execute("""
-                INSERT INTO user_images (user_id, image_id)
-                VALUES (?, ?)
-            """, (user_id, image_id))
-            conn.commit()
-        except sqlite3.IntegrityError as e:
-            logger.warning(f"Image {image_id} already marked as used for user {user_id}: {e}")
-            # Means (user_id, image_id) was already inserted
-            pass
-
+        c.execute("""
+            INSERT IGNORE INTO user_images (user_id, image_id)
+            VALUES (%s, %s)
+        """, (user_id, image_id))
+        conn.commit()
+    finally:
+        c.close()
+        conn.close()
 
 def check_category_limit(user: Dict[str, Any]) -> bool:
-    logger.info("Checking user's limit")
-    """Check if user clicked a category within the last 12 hours."""
     if user["last_category_click"]:
         last_click = datetime.fromisoformat(user["last_category_click"])
         if datetime.now() - last_click < timedelta(hours=12):
-            return False  # User must wait 24 hours
+            return False
     return True
 
-
 def update_category_click(user_id: int):
-    logger.info("Update user's click time")
-    """Update the last category click timestamp."""
-    with sqlite3.connect("bot_data.db") as conn:
+    conn = get_connection()
+    try:
         c = conn.cursor()
         c.execute("""
-            UPDATE users SET last_category_click = ? WHERE user_id = ?
+            UPDATE users 
+               SET last_category_click = %s 
+             WHERE user_id = %s
         """, (datetime.now().isoformat(), user_id))
         conn.commit()
+    finally:
+        c.close()
+        conn.close()
 
 
 # -------------------------
